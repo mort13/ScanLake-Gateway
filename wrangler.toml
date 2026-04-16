@@ -1,0 +1,34 @@
+name = "scanlake-gateway"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+[vars]
+ALLOWED_ORIGIN = "*"
+
+# Read-only access to the data bucket.
+[[r2_buckets]]
+binding = "SCANLAKE_BUCKET"
+bucket_name = "scanlake-data"
+
+# Write access for structured access logs.
+[[r2_buckets]]
+binding = "SCANLAKE_LOGS"
+bucket_name = "scanlake-logs"
+
+[durable_objects]
+bindings = [
+  { name = "RATE_LIMITER", class_name = "RateLimiter" },
+  { name = "LOG_BUFFER",   class_name = "LogBuffer"   },
+]
+
+# Shared API key store — same namespace as scanlake-store so one key
+# grants access to both the upload and gateway surfaces.
+# Copy the real IDs from the scanlake-store wrangler.toml.
+[[kv_namespaces]]
+binding = "API_KEYS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_KV_PREVIEW_NAMESPACE_ID"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimiter", "LogBuffer"]
