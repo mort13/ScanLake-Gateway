@@ -17,6 +17,7 @@ const ALLOWED_IPS: string[] = [
  */
 const ALLOWED_ORIGINS: string[] = [
   'https://dashboard.scanlake.rocks',
+  'https://2431c6e1.scanlake-dashboard.pages.dev',
 ]
 
 /**
@@ -28,9 +29,24 @@ const ALLOWED_ORIGINS: string[] = [
  * Falls back to the X-Forwarded-For header when that is absent (local dev).
  */
 export const ipAllowlistMiddleware: MiddlewareHandler = async (c, next) => {
+  // Cross-origin browser requests include an Origin header.
   const origin = c.req.header('Origin')
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
     return next()
+  }
+
+  // Same-origin browser requests omit Origin but include a Referer header.
+  // Extract the origin portion (scheme + host) and check against the allowlist.
+  const referer = c.req.header('Referer')
+  if (referer) {
+    try {
+      const refererOrigin = new URL(referer).origin
+      if (ALLOWED_ORIGINS.includes(refererOrigin)) {
+        return next()
+      }
+    } catch {
+      // Malformed Referer — fall through to IP check.
+    }
   }
 
   const clientIp =
