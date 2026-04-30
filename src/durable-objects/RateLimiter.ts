@@ -23,6 +23,17 @@ export class RateLimiter implements DurableObject {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+
+    // Read-only status check — returns current count without recording a request.
+    if (request.method === 'GET' && url.pathname === '/status') {
+      const windowMs = parseInt(url.searchParams.get('windowMs') ?? '3600000', 10)
+      const now = Date.now()
+      const timestamps: number[] = (await this.state.storage.get('timestamps')) ?? []
+      const active = timestamps.filter((t) => t > now - windowMs)
+      return Response.json({ count: active.length })
+    }
+
     if (request.method !== 'POST') {
       return new Response('Method not allowed', { status: 405 })
     }
