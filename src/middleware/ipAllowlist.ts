@@ -54,7 +54,16 @@ export const ipAllowlistMiddleware: MiddlewareHandler = async (c, next) => {
     c.req.header('X-Forwarded-For')?.split(',')[0].trim()
 
   if (!clientIp || !ALLOWED_IPS.includes(clientIp)) {
-    return c.json({ error: 'Forbidden' }, 403)
+    // DEBUG — remove after diagnosis
+    return c.json({
+      error: 'Forbidden',
+      debug: {
+        origin: c.req.header('Origin') ?? null,
+        referer: c.req.header('Referer') ?? null,
+        cfConnectingIp: c.req.header('CF-Connecting-IP') ?? null,
+        secFetchSite: c.req.header('Sec-Fetch-Site') ?? null,
+      },
+    }, 403)
   }
 
   await next()

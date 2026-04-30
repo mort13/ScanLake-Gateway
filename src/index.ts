@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import type { Env, AppVariables } from './types'
 import { corsMiddleware } from './middleware/cors'
-import { ipAllowlistMiddleware } from './middleware/ipAllowlist'
 import { apiKeyMiddleware } from './middleware/apiKey'
 import { rateLimitMiddleware } from './middleware/rateLimit'
 import { filesListRoute, filesDownloadRoute } from './routes/files'
@@ -17,9 +16,6 @@ type AppEnv = {
 }
 
 const app = new Hono<AppEnv>()
-
-// IP allowlist — blocks unlisted clients before any other logic runs.
-app.use('*', ipAllowlistMiddleware)
 
 // CORS + OPTIONS preflight — must run before auth so browsers can preflight.
 app.use('/api/*', corsMiddleware)
