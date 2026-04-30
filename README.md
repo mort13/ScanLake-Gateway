@@ -68,7 +68,7 @@ ScanLake Gateway acts as an intelligent proxy between clients and your data stor
 
 ## API Endpoints
 
-### List Files
+### List Filess
 
 **Endpoint:** `GET /api/files`
 
