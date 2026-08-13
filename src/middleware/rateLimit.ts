@@ -10,7 +10,7 @@ const GLOBAL_HARD_LIMIT = 10_000_000
 const GLOBAL_WINDOW_MS = 2_592_000_000 // 30 days
 
 /** Hard per-IP ceiling regardless of API key limits. */
-const IP_HARD_LIMIT = 500
+const IP_HARD_LIMIT = 5000
 const IP_WINDOW_MS = 3_600_000 // 1 hour
 
 type RateLimitEnv = {
@@ -22,7 +22,7 @@ type RateLimitEnv = {
  * Enforces three rate-limit checks (in order):
  *   1. Global hard ceiling — 10 000 000 req/30 days across all traffic. Cost-control backstop.
  *   2. Per-API-key limit — from the key's own metadata (rateLimit / rateLimitWindowMs).
- *   3. Per-IP hard ceiling — 500 req/hr, always applied regardless of key limits.
+ *   3. Per-IP hard ceiling — 5000 req/hr, always applied regardless of key limits.
  *
  * Returns 429 with a Retry-After header (seconds) on exhaustion.
  */
