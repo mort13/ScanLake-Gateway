@@ -1,5 +1,5 @@
 export interface ListResult {
-  objects: Pick<R2Object, 'key' | 'size' | 'uploaded'>[]
+  objects: Pick<R2Object, 'key' | 'size' | 'uploaded' | 'etag'>[]
   truncated: boolean
   cursor?: string
 }
@@ -17,7 +17,12 @@ export async function listFiles(
   const result = await bucket.list(options)
 
   return {
-    objects: result.objects.map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })),
+    objects: result.objects.map((o) => ({
+      key: o.key,
+      size: o.size,
+      uploaded: o.uploaded,
+      etag: o.etag,
+    })),
     truncated: result.truncated,
     ...(result.truncated ? { cursor: result.cursor } : {}),
   }

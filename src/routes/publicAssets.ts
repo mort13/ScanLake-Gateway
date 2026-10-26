@@ -1,22 +1,11 @@
 import type { Context } from 'hono'
 import type { Env } from '../types'
+import { isSafeKey } from '../services/keys'
 
 type PublicEnv = { Bindings: Env }
 
 /** R2 key prefix reserved for publicly readable static assets. */
 const PUBLIC_PREFIX = 'public/'
-
-/** Allowlist: only alphanumerics, slashes, dots, hyphens, underscores. */
-const SAFE_KEY_RE = /^[a-zA-Z0-9/_.\-]+$/
-
-function isSafeKey(key: string): boolean {
-  return (
-    key.length > 0 &&
-    SAFE_KEY_RE.test(key) &&
-    !key.includes('..') &&
-    !key.startsWith('/')
-  )
-}
 
 /**
  * GET /public/:key{.+}

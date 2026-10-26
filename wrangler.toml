@@ -15,6 +15,12 @@ bucket_name = "scanlake-data"
 binding = "SCANLAKE_LOGS"
 bucket_name = "scanlake-logs"
 
+# Derived data (consolidated datasets, results) written by ScanLake Refinery.
+# Readable by any key; writable only by keys with the "derived:write" scope.
+[[r2_buckets]]
+binding = "SCANLAKE_DERIVED"
+bucket_name = "scanlake-derived"
+
 [durable_objects]
 bindings = [
   { name = "RATE_LIMITER", class_name = "RateLimiter" },

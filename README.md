@@ -1,6 +1,6 @@
 # ScanLake Gateway
 
-A secure, high-performance Cloudflare Workers gateway for accessing data stored in Cloudflare R2 buckets. The gateway provides authenticated file listing and download capabilities with built-in rate limiting, CORS support, and comprehensive access logging.
+A secure, high-performance Cloudflare Workers gateway for accessing data stored in Cloudflare R2 buckets. The gateway provides authenticated file listing and download capabilities with built-in rate limiting, CORS support, and comprehensive access logging. Keys with the `derived:write` scope (ScanLake Refinery) can also upload consolidated data and results into a separate `scanlake-derived` bucket.
 
 ## Overview
 
@@ -16,8 +16,9 @@ ScanLake Gateway acts as an intelligent proxy between clients and your data stor
 
 - 📡 **File Listing** – Browse objects in your R2 bucket with optional prefix filtering and pagination
 - 📥 **File Download** – Stream files with proper HTTP headers (ETag, Content-Length, etc.)
+- 📤 **Derived Data Upload** – Checksum-verified writes into `scanlake-derived` for keys with the `derived:write` scope
 - 🔐 **API Key Authentication** – SHA-256 hashed keys stored in Cloudflare KV
-- 🚦 **Rate Limiting** – Configurable per-key limits + 500 req/hr hard IP ceiling
+- 🚦 **Rate Limiting** – Configurable per-key limits + 5000 req/hr hard IP ceiling
 - 🌐 **CORS Ready** – Supports browser-based clients with origin restrictions per API key
 - 📊 **Audit Logging** – All file access events logged to R2 for compliance
 - 🚀 **Serverless** – Built on Cloudflare Workers with Durable Objects for state
@@ -50,6 +51,10 @@ ScanLake Gateway acts as an intelligent proxy between clients and your data stor
    binding = "SCANLAKE_LOGS"
    bucket_name = "your-logs-bucket"  # Write access for logs
 
+   [[r2_buckets]]
+   binding = "SCANLAKE_DERIVED"
+   bucket_name = "scanlake-derived"  # Derived data, writable with "derived:write"
+
    [[kv_namespaces]]
    binding = "API_KEYS"
    id = "your-kv-namespace-id"
@@ -61,7 +66,7 @@ ScanLake Gateway acts as an intelligent proxy between clients and your data stor
    # Gateway runs on localhost:8787
    ```
 
-4. **Deploy**
+4. **Deploy** – see [Deployment](#deployment) for the required order (the `scanlake-derived` bucket must exist first)
    ```bash
    npm run deploy
    ```
@@ -90,17 +95,21 @@ Lists objects in the configured R2 bucket with optional filtering and pagination
     {
       "key": "2026/04/16/user/file.parquet",
       "size": 1048576,
-      "uploaded": "2026-04-16T10:30:00Z"
+      "uploaded": "2026-04-16T10:30:00Z",
+      "etag": "5d41402abc4b2a76b9719d911017c592"
     },
     {
       "key": "2026/04/16/user/metadata.json",
       "size": 2048,
-      "uploaded": "2026-04-16T10:31:00Z"
+      "uploaded": "2026-04-16T10:31:00Z",
+      "etag": "7d793037a0760186574b0282f2f435e7"
     }
   ],
   "truncated": false
 }
 ```
+
+`etag` is the R2 object ETag (unquoted). It changes whenever the object is rewritten, so clients can use it to detect new or changed files without downloading them.
 
 **Error Responses:**
 - `401 Unauthorized` – Missing or invalid API key
@@ -154,6 +163,64 @@ curl -H "X-API-Key: sk_1234567890abcdef" \
 
 ---
 
+### Derived Data
+
+Consolidated datasets and results produced by ScanLake Refinery live in their own R2 bucket, `scanlake-derived` (binding `SCANLAKE_DERIVED`). They are kept out of `scanlake-data` because the Dashboard lists the entire raw bucket and would otherwise merge derived parquet files into its catch-all view.
+
+| Endpoint | Access | Behaviour |
+|---|---|---|
+| `GET /api/derived` | any valid key | Same as `GET /api/files` (query params, response shape incl. `etag`), for `scanlake-derived` |
+| `GET /api/derived/:key` | any valid key | Same as `GET /api/files/:key`, for `scanlake-derived` |
+| `PUT /api/derived/:key` | keys with the `derived:write` scope | Writes one object (see below) |
+
+All three run through the same API-key and rate-limit middleware as `/api/files`.
+
+#### Upload Derived File
+
+**Endpoint:** `PUT /api/derived/:key`
+
+Creates the object, or replaces it if the key already exists. The body is the raw file content (not multipart).
+
+**Headers:**
+- `X-API-Key` *(required)* – a key whose metadata contains `"scopes": ["derived:write"]`
+- `Content-Length` *(required)* – body size in bytes, at most 50 MB (52 428 800)
+- `X-Content-SHA256` *(required)* – hex SHA-256 of the body (64 characters). R2 recomputes the digest and refuses to store the object if it differs, so a corrupted body is never written.
+- `Content-Type` *(optional)* – stored with the object and returned on download (default `application/octet-stream`)
+
+**Response (200 OK):**
+```json
+{
+  "key": "consolidated/2026/10/26/scans_part001.parquet",
+  "size": 1048576,
+  "etag": "5d41402abc4b2a76b9719d911017c592"
+}
+```
+
+The `etag` matches the `etag` reported by `GET /api/derived` for that key.
+
+**Error Responses:**
+- `400 Bad Request` – unsafe key (e.g. contains `..`), malformed `Content-Length` or missing/malformed `X-Content-SHA256`
+- `401 Unauthorized` – missing or invalid API key
+- `403 Forbidden` – key revoked, origin not permitted, or key lacks the `derived:write` scope
+- `411 Length Required` – no `Content-Length` (e.g. chunked transfer encoding)
+- `413 Payload Too Large` – `Content-Length` above 50 MB
+- `422 Unprocessable Entity` – body does not match `X-Content-SHA256`; nothing was stored
+- `429 Too Many Requests` – rate limit exceeded
+
+Browsers cannot call this route: CORS only allows `GET` and `OPTIONS`, so a cross-origin `PUT` fails its preflight.
+
+**Example Request:**
+```bash
+curl -X PUT \
+  -H "X-API-Key: sk_..." \
+  -H "Content-Type: application/vnd.apache.parquet" \
+  -H "X-Content-SHA256: $(sha256sum result.parquet | cut -d' ' -f1)" \
+  --data-binary @result.parquet \
+  "https://gateway.scanlake.rocks/api/derived/consolidated/2026/10/26/scans_part001.parquet"
+```
+
+---
+
 ## Authentication
 
 ### API Key Format
@@ -183,29 +250,44 @@ sk_1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d
      "rateLimitWindowMs": 3600000,
      "maxUploadBytes": 0,
      "allowedOrigins": ["https://app.example.com"],
+     "scopes": [],
      "createdAt": "2026-04-01T00:00:00Z"
    }
    ```
 
-### Creating an API Key Programmatically
+   The `API_KEYS` namespace is shared with the Store Worker. Keys meant only for the Gateway must have `"maxUploadBytes": 0`: the Store Worker's `POST /api/external/upload` accepts any active key and only limits file size by `maxUploadBytes`, so `0` keeps a Gateway key from uploading raw scan data.
 
-Store a new key in KV:
-```javascript
-const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('sk_...'));
-const hashHex = Array.from(new Uint8Array(hash))
-  .map(b => b.toString(16).padStart(2, '0'))
-  .join('');
+### Scopes
 
-await API_KEYS.put(`apikey:${hashHex}`, JSON.stringify({
-  ownerId: "user-123",
-  active: true,
-  rateLimit: 1000,
-  rateLimitWindowMs: 3600000,
-  maxUploadBytes: 0,
-  allowedOrigins: ["https://app.example.com"],
-  createdAt: new Date().toISOString()
-}));
+Every valid key can read (`GET /api/files…`, `GET /api/derived…`). Write access is granted per key through the optional `scopes` array:
+
+| Scope | Grants |
+|---|---|
+| `derived:write` | `PUT /api/derived/:key` |
+
+Keys without a `scopes` field (all keys created before this feature) are read-only and get `403` on write routes.
+
+### Creating an API Key
+
+`scripts/create-api-key.mjs` (Node, no dependencies) generates a key, prints the plaintext once, and prints, without running it, the `wrangler kv key put` command that stores its hash and metadata:
+
+```bash
+# ScanLake Refinery key (defaults: owner scanlake-refinery, scopes derived:write, 2000 req/h)
+node scripts/create-api-key.mjs
+
+# Other keys
+node scripts/create-api-key.mjs --owner my-tool --scopes "" --rate-limit 500
 ```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--owner` | `scanlake-refinery` | `ownerId` written to logs |
+| `--scopes` | `derived:write` | Comma-separated scopes; `""` for a read-only key |
+| `--rate-limit` | `2000` | Requests per hour (`rateLimitWindowMs` is fixed at 3 600 000) |
+
+Every key it creates has `active: true`, `allowedOrigins: []` and `maxUploadBytes: 0`. Review the printed command, then run it yourself. It targets the production namespace (`--remote --preview false`; wrangler requires the `--preview` flag because `API_KEYS` has both an `id` and a `preview_id`). The metadata is written to a temp JSON file and passed with `--path`, because shells mangle inline JSON quoting differently, and a malformed entry makes every request with that key fail with 500.
+
+To revoke a key, set `"active": false` in its KV entry (or delete the entry).
 
 ---
 
@@ -229,7 +311,7 @@ Each API key has its own configurable rate limit defined in its metadata:
 
 ### 2. Per-IP Hard Ceiling
 
-All requests from the same IP address are limited to **500 requests per hour**, regardless of API key limits. This protects the gateway from abuse.
+All requests from the same IP address are limited to **5000 requests per hour**, regardless of API key limits. This protects the gateway from abuse.
 
 ### Rate Limit Responses
 
@@ -267,7 +349,7 @@ The gateway supports Cross-Origin Resource Sharing (CORS), allowing browser-base
 
 **Allow:** Any origin (`*`)
 
-**Allowed Methods:** `GET`, `OPTIONS`
+**Allowed Methods:** `GET`, `OPTIONS` (deliberately no `PUT`: derived uploads are server-to-server only, and browsers cannot pass the preflight)
 
 **Allowed Headers:**
 - `X-API-Key`
@@ -406,7 +488,9 @@ const result = await conn.query(`
 │ ├────────────────────────────────────────────────────┤  │
 │ │ Rate Limiting Middleware (Durable Objects)         │  │
 │ ├────────────────────────────────────────────────────┤  │
-│ │ File Routes (List & Download)                      │  │
+│ │ Scope Check (write routes only)                    │  │
+│ ├────────────────────────────────────────────────────┤  │
+│ │ File Routes (List, Download, Derived Upload)       │  │
 │ └────────────────────────────────────────────────────┘  │
 │          │                        │                      │
 └──────────┼────────────────────────┼──────────────────────┘
@@ -430,6 +514,8 @@ const result = await conn.query(`
     ├──────────────────────────────────────┤
     │ SCANLAKE_BUCKET (Read-only data)     │
     │ SCANLAKE_LOGS (Write-only logs)      │
+    │ SCANLAKE_DERIVED (Derived data,      │
+    │   write needs derived:write)         │
     └──────────────────────────────────────┘
 ```
 
@@ -454,16 +540,23 @@ src/
 ├── middleware/
 │   ├── apiKey.ts           # API key validation
 │   ├── cors.ts             # CORS headers
-│   └── rateLimit.ts        # Rate limiting
+│   ├── rateLimit.ts        # Rate limiting
+│   └── requireScope.ts     # Per-key scope check for write routes
 ├── routes/
-│   └── files.ts            # File list & download endpoints
+│   ├── files.ts            # List & download route factories (per bucket)
+│   ├── derived.ts          # PUT /api/derived/:key
+│   ├── publicAssets.ts     # Unauthenticated public/ assets
+│   └── admin.ts            # Budget status
 ├── services/
 │   ├── r2.ts               # R2 bucket operations
+│   ├── keys.ts             # Object key validation (isSafeKey)
 │   ├── rate-limit.ts       # Rate limit logic
 │   └── logger.ts           # Audit logging
 └── durable-objects/
     ├── RateLimiter.ts      # Durable Object for rate limiting
     └── LogBuffer.ts        # Durable Object for log buffering
+scripts/
+└── create-api-key.mjs      # Generates a key + prints the KV command
 ```
 
 ### Running Tests
@@ -472,6 +565,15 @@ src/
 npm run dev
 # Make test requests to http://localhost:8787/api/files with X-API-Key header
 ```
+
+`wrangler dev` reads the `preview_id` KV namespace locally, so register a local test key with `--local --preview` instead of `--remote --preview false`:
+
+```bash
+node scripts/create-api-key.mjs --owner local-test
+# then run the printed command with "--remote --preview false" replaced by "--local --preview"
+```
+
+On Windows, keep the `--persist-to` folder short: Durable Object SQLite files under a long path exceed the 260-character limit and every rate-limited request then fails with `internal error`.
 
 ### Type Generation
 
@@ -487,14 +589,25 @@ npm run types
 ### Prerequisites
 
 1. Cloudflare account with billing enabled
-2. R2 buckets created (`scanlake-data`, `scanlake-logs`)
+2. R2 buckets created (`scanlake-data`, `scanlake-logs`, `scanlake-derived`)
 3. KV namespace created for API key storage
 
 ### Deploy to Cloudflare
 
+Order matters: a deploy fails while a bound bucket does not exist, so create `scanlake-derived` first.
+
 ```bash
+# 1. Create the derived-data bucket (once)
+npx wrangler r2 bucket create scanlake-derived
+
+# 2. Deploy the Worker
 npm run deploy
+
+# 3. Create the Refinery key and run the printed "wrangler kv key put" command
+node scripts/create-api-key.mjs
 ```
+
+The new routes are additive: `/api/files` behaves as before (its list entries gain an `etag` field), and existing keys keep read-only access.
 
 The gateway will be deployed to a URL like:
 ```
@@ -528,10 +641,10 @@ All file access is logged to the `scanlake-logs` R2 bucket with the following ev
 ```
 
 **Logged Actions:**
-- `read` – File list or download request
+- `read` – File list or download request (`/api/files…` and `/api/derived…`)
+- `write` – Derived upload (`PUT /api/derived/:key`); `dataset` is the full object key
 - `query` – (Reserved for future use)
 - `ingest` – (Reserved for future use)
-- `write` – (Reserved for future use)
 
 ### Metrics
 
@@ -581,7 +694,7 @@ curl -H "X-API-Key: sk_1234567890abcdef" https://gateway.example.com/api/files
 
 **Possible Causes:**
 - Too many requests in the window
-- IP hard ceiling hit (500 req/hr)
+- IP hard ceiling hit (5000 req/hr)
 
 **Solution:**
 - Wait for the time specified in `Retry-After` header

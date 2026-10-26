@@ -1,6 +1,7 @@
 export interface Env {
   SCANLAKE_BUCKET: R2Bucket
   SCANLAKE_LOGS: R2Bucket
+  SCANLAKE_DERIVED: R2Bucket
   RATE_LIMITER: DurableObjectNamespace
   LOG_BUFFER: DurableObjectNamespace
   ALLOWED_ORIGIN: string
@@ -22,6 +23,11 @@ export interface ApiKeyMeta {
    * Enforced for browser-origin calls.
    */
   allowedOrigins: string[]
+  /**
+   * Extra permissions beyond read access (e.g. "derived:write").
+   * Keys without scopes are read-only.
+   */
+  scopes?: string[]
   createdAt: string
 }
 
