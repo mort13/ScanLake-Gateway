@@ -1,0 +1,24 @@
+# Dependencies and build output
+node_modules/
+dist/
+
+# Wrangler local dev state (Miniflare KV/R2/DO data, may hold test keys and data)
+.wrangler/
+
+# Secrets
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+id_ecdsa*
+rclone.conf
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
