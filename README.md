@@ -17,6 +17,7 @@ ScanLake Gateway acts as an intelligent proxy between clients and your data stor
 - 📡 **File Listing** – Browse objects in your R2 bucket with optional prefix filtering and pagination
 - 📥 **File Download** – Stream files with proper HTTP headers (ETag, Content-Length, etc.)
 - 📤 **Derived Data Upload** – Checksum-verified writes into `scanlake-derived` for keys with the `derived:write` scope
+- 📐 **Parquet Format** – Public `GET /api/format` serves the column format uploads must match
 - 🔐 **API Key Authentication** – SHA-256 hashed keys stored in Cloudflare KV
 - 🚦 **Rate Limiting** – Configurable per-key limits + 5000 req/hr hard IP ceiling
 - 🌐 **CORS Ready** – Supports browser-based clients with origin restrictions per API key
@@ -217,6 +218,24 @@ curl -X PUT \
   -H "X-Content-SHA256: $(sha256sum result.parquet | cut -d' ' -f1)" \
   --data-binary @result.parquet \
   "https://gateway.scanlake.rocks/api/derived/consolidated/2026/10/26/scans_part001.parquet"
+```
+
+---
+
+### Parquet Format
+
+**Endpoint:** `GET /api/format`
+
+Returns the parquet format uploads must match: for each of `scans`, `compositions` and `confidences`, the required columns and their types. ScanLake Store rejects uploads that deviate from it with `422`. The file lives in the public [ScanLake-Format](https://github.com/mort13/ScanLake-Format) repository (`FORMAT_URL` in `wrangler.toml`), whose README describes its structure; this route proxies it.
+
+No API key needed and no rate-limit slot consumed. Cached at the edge and by clients for 5 minutes.
+
+**Error Responses:**
+- `502 Bad Gateway` – the format repository could not be reached
+
+**Example Request:**
+```bash
+curl "https://gateway.scanlake.rocks/api/format"
 ```
 
 ---
@@ -546,6 +565,7 @@ src/
 │   ├── files.ts            # List & download route factories (per bucket)
 │   ├── derived.ts          # PUT /api/derived/:key
 │   ├── publicAssets.ts     # Unauthenticated public/ assets
+│   ├── format.ts           # GET /api/format (proxied from ScanLake-Format)
 │   └── admin.ts            # Budget status
 ├── services/
 │   ├── r2.ts               # R2 bucket operations

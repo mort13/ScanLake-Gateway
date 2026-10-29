@@ -4,6 +4,8 @@ compatibility_date = "2025-01-01"
 
 [vars]
 ALLOWED_ORIGIN = "*"
+# Parquet format served at /api/format; ScanLake Store checks uploads against the same file.
+FORMAT_URL = "https://raw.githubusercontent.com/mort13/ScanLake-Format/main/format.json"
 
 # Read-only access to the data bucket.
 [[r2_buckets]]

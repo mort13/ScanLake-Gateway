@@ -6,6 +6,8 @@ export interface Env {
   LOG_BUFFER: DurableObjectNamespace
   ALLOWED_ORIGIN: string
   API_KEYS: KVNamespace
+  /** URL of format.json in the ScanLake-Format repository, served at /api/format. */
+  FORMAT_URL: string
 }
 
 export interface ApiKeyMeta {

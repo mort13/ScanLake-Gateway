@@ -7,6 +7,7 @@ import { requireScope } from './middleware/requireScope'
 import { makeListRoute, makeDownloadRoute } from './routes/files'
 import { derivedPutRoute } from './routes/derived'
 import { publicAssetsRoute } from './routes/publicAssets'
+import { formatRoute } from './routes/format'
 import { budgetStatusRoute } from './routes/admin'
 
 export { RateLimiter } from './durable-objects/RateLimiter'
@@ -40,6 +41,9 @@ app.get('/api/admin/budget', budgetStatusRoute)
 
 // Public (no-auth) static assets served from the "public/" R2 prefix.
 app.get('/public/:key{.+}', publicAssetsRoute)
+
+// Parquet format that uploads must match (no auth, proxied from the ScanLake-Format repo).
+app.get('/api/format', formatRoute)
 
 // Raw scan data (scanlake-data) — read-only.
 app.get('/api/files', makeListRoute((env) => env.SCANLAKE_BUCKET))
