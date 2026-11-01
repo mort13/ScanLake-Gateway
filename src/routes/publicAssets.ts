@@ -36,7 +36,13 @@ export async function publicAssetsRoute(c: Context<PublicEnv>): Promise<Response
 
   const headers = new Headers()
   object.writeHttpMetadata(headers)
-  headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+  // Manifests (e.g. ScanLake Desktop's public/desktop/manifest.json) are replaced in place and
+  // must be revalidated. Everything else is cached for a year: a changed file needs a new key
+  // (like the content-addressed public/desktop/files/<sha256>), not an upload over the old one.
+  headers.set(
+    'Cache-Control',
+    r2Key.endsWith('manifest.json') ? 'no-cache' : 'public, max-age=31536000, immutable',
+  )
   if (object.etag) headers.set('ETag', `"${object.etag}"`)
 
   const status = rangeHeader ? 206 : 200
