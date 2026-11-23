@@ -15,8 +15,17 @@ export const corsMiddleware: MiddlewareHandler<{ Bindings: Env }> = (_c, next) =
   const handler = cors({
     origin: '*',
     allowMethods: ['GET', 'OPTIONS'],
-    allowHeaders: ['X-API-Key', 'Content-Type', 'Range'],
-    exposeHeaders: ['Content-Length', 'Content-Disposition', 'ETag', 'Content-Range'],
+    allowHeaders: ['X-API-Key', 'Authorization', 'Content-Type', 'Range'],
+    exposeHeaders: [
+      'Content-Length',
+      'Content-Disposition',
+      'ETag',
+      'Content-Range',
+      'Retry-After',
+      'X-RateLimit-Limit',
+      'X-RateLimit-Remaining',
+      'X-RateLimit-Reset',
+    ],
     maxAge: 86400,
   })
   return handler(_c, next)

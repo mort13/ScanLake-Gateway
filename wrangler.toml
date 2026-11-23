@@ -35,6 +35,12 @@ binding = "API_KEYS"
 id = "ac8fe738c3014c49b0a986af12af23f9"
 preview_id = "b7c163bedd4644e8bd010e4d57252ca1"
 
+# One data point per authenticated request (src/middleware/usage.ts).
+# ScanLake Auth's admin panel reads it through the Analytics Engine SQL API.
+[[analytics_engine_datasets]]
+binding = "USAGE"
+dataset = "scanlake_gateway_usage"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RateLimiter", "LogBuffer"]

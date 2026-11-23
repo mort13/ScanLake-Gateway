@@ -1,36 +1,35 @@
-interface RateLimitResult {
-  allowed: boolean
-  remaining?: number
-  retryAfterMs?: number
-}
+import type { RateWindow } from '../types'
+import type { CheckResult, StatusResult } from '../durable-objects/RateLimiter'
 
+export type RateLimitResult = CheckResult
+
+/**
+ * Counts one request against the RateLimiter DO named `name`, in every window
+ * at once: it is allowed (and counted) only if all windows have room.
+ */
 export async function checkRateLimit(
   namespace: DurableObjectNamespace,
-  key: string,
-  limit: number,
-  windowMs: number,
+  name: string,
+  windows: RateWindow[],
 ): Promise<RateLimitResult> {
-  const id = namespace.idFromName(key)
-  const stub = namespace.get(id)
-
+  const stub = namespace.get(namespace.idFromName(name))
   const res = await stub.fetch('https://rate-limiter/check', {
     method: 'POST',
-    body: JSON.stringify({ limit, windowMs }),
+    body: JSON.stringify({ windows }),
   })
-
+  if (!res.ok) {
+    throw new Error(`RateLimiter ${name} refused the check: ${res.status} ${await res.text()}`)
+  }
   return res.json()
 }
 
-export async function getGlobalBudgetUsage(
+/** Requests counted so far in the current window of `windowMs`, without recording one. */
+export async function getWindowUsage(
   namespace: DurableObjectNamespace,
-  key: string,
+  name: string,
   windowMs: number,
-): Promise<{ count: number }> {
-  const id = namespace.idFromName(key)
-  const stub = namespace.get(id)
-  const res = await stub.fetch(
-    `https://rate-limiter/status?windowMs=${windowMs}`,
-    { method: 'GET' },
-  )
+): Promise<StatusResult> {
+  const stub = namespace.get(namespace.idFromName(name))
+  const res = await stub.fetch(`https://rate-limiter/status?windowMs=${windowMs}`, { method: 'GET' })
   return res.json()
 }

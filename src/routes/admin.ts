@@ -1,10 +1,7 @@
 import type { Context } from 'hono'
 import type { Env, AppVariables } from '../types'
-import { getGlobalBudgetUsage } from '../services/rate-limit'
-
-// Keep in sync with rateLimit.ts
-const GLOBAL_HARD_LIMIT = 10_000_000
-const GLOBAL_WINDOW_MS = 2_592_000_000 // 30 days
+import { getWindowUsage } from '../services/rate-limit'
+import { GLOBAL_LIMIT } from '../lib/limits'
 
 type AdminEnv = {
   Bindings: Env
@@ -14,20 +11,23 @@ type AdminEnv = {
 /**
  * GET /api/admin/budget
  *
- * Returns the current global request budget usage for the rolling 30-day window.
- * Requires a valid API key but does not consume a rate-limit slot.
+ * Returns the global request budget usage for the current fixed 30-day window.
+ * Requires an internal API key (user keys get 403) but does not consume a
+ * rate-limit slot.
  */
 export async function budgetStatusRoute(c: Context<AdminEnv>): Promise<Response> {
-  const { count } = await getGlobalBudgetUsage(c.env.RATE_LIMITER, 'gw-global', GLOBAL_WINDOW_MS)
-  const remaining = Math.max(0, GLOBAL_HARD_LIMIT - count)
-  const usedPct = ((count / GLOBAL_HARD_LIMIT) * 100).toFixed(2)
+  const { limit, windowMs } = GLOBAL_LIMIT
+  const { count, resetMs } = await getWindowUsage(c.env.RATE_LIMITER, 'gw-global', windowMs)
+  const remaining = Math.max(0, limit - count)
+  const usedPct = ((count / limit) * 100).toFixed(2)
 
   return c.json({
     used: count,
-    limit: GLOBAL_HARD_LIMIT,
+    limit,
     remaining,
     usedPercent: Number(usedPct),
-    windowMs: GLOBAL_WINDOW_MS,
-    windowLabel: '30 days (rolling)',
+    windowMs,
+    windowLabel: '30-day window',
+    resetsAt: new Date(Date.now() + resetMs).toISOString(),
   })
 }

@@ -7,7 +7,9 @@ A secure, high-performance Cloudflare Workers gateway for accessing data stored 
 ScanLake Gateway acts as an intelligent proxy between clients and your data stored in Cloudflare R2, protecting your data with:
 
 - **API key authentication** – Secure key-based access control with per-key configuration
-- **Dual rate limiting** – Per-API-key limits plus hard per-IP ceiling
+- **User API keys** – Keys that Discord-verified users create in ScanLake Auth, limited to the public derived files (see [User API Keys](#user-api-keys))
+- **Layered rate limiting** – Per-key or per-account limits, a hard per-IP ceiling and a global budget
+- **Usage counting** – One Workers Analytics Engine data point per authenticated request
 - **CORS support** – Enable browser-based clients (e.g., DuckDB-WASM)
 - **Access logging** – Structured event logging for audit trails
 - **Path traversal protection** – Safe key validation prevents security issues
@@ -170,11 +172,11 @@ Consolidated datasets and results produced by ScanLake Refinery live in their ow
 
 | Endpoint | Access | Behaviour |
 |---|---|---|
-| `GET /api/derived` | any valid key | Same as `GET /api/files` (query params, response shape incl. `etag`), for `scanlake-derived` |
-| `GET /api/derived/:key` | any valid key | Same as `GET /api/files/:key`, for `scanlake-derived` |
-| `PUT /api/derived/:key` | keys with the `derived:write` scope | Writes one object (see below) |
+| `GET /api/derived` | any valid key | Same as `GET /api/files` (query params, response shape incl. `etag`), for `scanlake-derived`; user keys see only the public files |
+| `GET /api/derived/:key` | any valid key | Same as `GET /api/files/:key`, for `scanlake-derived`; user keys only the public files |
+| `PUT /api/derived/:key` | internal keys with the `derived:write` scope | Writes one object (see below) |
 
-All three run through the same API-key and rate-limit middleware as `/api/files`.
+All three run through the same API-key and rate-limit middleware as `/api/files`. What user keys may read is listed under [User API Keys](#user-api-keys).
 
 #### Upload Derived File
 
@@ -244,20 +246,28 @@ curl "https://gateway.scanlake.rocks/api/format"
 
 ### API Key Format
 
-API keys follow the pattern `sk_` followed by 32–64 lowercase hexadecimal characters:
+There are two kinds of key:
+
+| Kind | Format | KV entry | Issued by |
+|---|---|---|---|
+| Internal | `sk_` + 32–64 hex characters | `apikey:<sha256>` | `scripts/create-api-key.mjs` (Store, Refinery, Dashboard proxy) |
+| User | `slk_` + 64 lowercase hex characters | `ukey:<sha256>` | ScanLake Auth, for Discord-verified users (see [User API Keys](#user-api-keys)) |
+
 ```
 sk_1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d
 ```
 
+Send the key as `X-API-Key: <key>` or `Authorization: Bearer <key>`. When both are present, `X-API-Key` wins.
+
 ### How It Works
 
-1. **Key Storage:** API keys are **never stored in plaintext**. Only SHA-256 hashes are stored in KV under the key prefix `apikey:<hash>`.
+1. **Key Storage:** API keys are **never stored in plaintext**. Only SHA-256 hashes (of the whole key, prefix included) are stored in KV, under `apikey:<hash>` or `ukey:<hash>`.
 
 2. **Validation:** On each request:
-   - Extract `X-API-Key` header
-   - Validate format (`sk_[a-f0-9]{32,64}`)
+   - Read `X-API-Key`, else `Authorization: Bearer`
+   - Validate format (`sk_[a-f0-9]{32,64}` or `slk_[0-9a-f]{64}`)
    - Hash with SHA-256
-   - Look up metadata in KV namespace
+   - Look up metadata in KV namespace (`apikey:` for `sk_`, `ukey:` for `slk_`)
    - Check if key is active and origin is allowed
 
 3. **Metadata:** Each API key has associated metadata (JSON):
@@ -278,7 +288,7 @@ sk_1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d
 
 ### Scopes
 
-Every valid key can read (`GET /api/files…`, `GET /api/derived…`). Write access is granted per key through the optional `scopes` array:
+Every valid internal key can read (`GET /api/files…`, `GET /api/derived…`); user keys read only the public derived files, whatever their `scopes`. Write access is granted per internal key through the optional `scopes` array:
 
 | Scope | Grants |
 |---|---|
@@ -310,15 +320,110 @@ To revoke a key, set `"active": false` in its KV entry (or delete the entry).
 
 ---
 
+## User API Keys
+
+Discord-verified users create their own keys in ScanLake Auth (`auth.scanlake.rocks`). Auth is the source of truth: it keeps the keys in D1 and writes one KV entry per key into `API_KEYS`. The Gateway only reads those entries and enforces what a key may do, its rate limits, and usage counting.
+
+The `slk_` prefix and the `ukey:` KV prefix keep user keys away from ScanLake Store, which shares `API_KEYS` but accepts any `apikey:` entry for uploads.
+
+### KV entry
+
+`ukey:<sha256 hex of the full token>`:
+
+```json
+{
+  "kind": "user",
+  "ownerId": "…",
+  "discordId": "…",
+  "tier": "verified",
+  "active": true,
+  "limits": [{ "limit": 60, "windowMs": 60000 }, { "limit": 2000, "windowMs": 86400000 }],
+  "rateLimit": 2000,
+  "rateLimitWindowMs": 86400000,
+  "maxUploadBytes": 0,
+  "allowedOrigins": [],
+  "scopes": ["derived:public"],
+  "createdAt": "2026-11-23T00:00:00.000Z"
+}
+```
+
+Revoking a key deletes its entry, so a revoked key gets `401`; an entry with `"active": false` gets `403`. Anything found under `ukey:` is treated as a user key, whatever its `kind` or `scopes` say.
+
+### What a user key may do
+
+Only reads of the public derived files, the same ones the Dashboard proxy forwards (`src/lib/publicDerived.ts`, kept in sync with `ScanLake Dashboard/functions/lib/proxy-paths.js`):
+
+| Request | Result |
+|---|---|
+| `GET /api/derived/manifest.json` | served |
+| `GET /api/derived/consolidated/scans.parquet`, `…/compositions.parquet` | served |
+| `GET /api/derived/results/<name>.parquet` (`name` = `[a-z0-9_]+`) | served |
+| `GET /api/derived` | listing of the files above only |
+| any other `/api/derived/…` path (`consolidated/positions.parquet`, `monthly/…`, encoded paths) | `404 {"error":"File not found"}`, whether the file exists or not |
+| `/api/files…`, `/api/admin/…` | `403` |
+| any method other than `GET`/`HEAD` (e.g. `PUT`) | `403` |
+
+The listing scans only the prefixes that hold public files and returns them in one response: `prefix` and `limit` work as usual, but there is never a `cursor` (`truncated: true` only means more than `limit` public files exist).
+
+### Kill switch
+
+KV entry `config:user-keys` = `{"issuing": bool, "serving": bool}`; a missing entry means both are `true`. Auth reads `issuing`; while `serving` is `false`, every user-key request gets `403 {"error":"API access for user keys is paused"}`. The Gateway caches the entry for 60 s, so a change takes up to a minute to reach every edge location. An entry that is not valid JSON counts as paused. Internal keys are never affected.
+
+To flip it by hand (the JSON goes through a file, as shells mangle inline JSON quoting):
+
+```bash
+# user-keys.json: {"issuing":true,"serving":false}
+npx wrangler kv key put --binding API_KEYS --remote --preview false "config:user-keys" --path user-keys.json
+```
+
+### Rate limits
+
+All keys of one Discord account share the account's limits (Durable Object `gw-acct:<discordId>`), taken from the entry's `limits` (each window must have room). Auth issues two tiers:
+
+| Tier | Per minute | Per day |
+|---|---|---|
+| `verified` | 60 | 2,000 |
+| `trusted` | 600 | 20,000 |
+
+Every user-key response carries the state of the account's most constrained window:
+
+| Header | Meaning |
+|---|---|
+| `X-RateLimit-Limit` | that window's limit |
+| `X-RateLimit-Remaining` | requests left in it |
+| `X-RateLimit-Reset` | seconds until it resets (a delay, not a timestamp) |
+
+A `429` also has `Retry-After` (seconds). Requests refused with `403`/`404` cost no rate-limit slot.
+
+### Usage counting
+
+Every authenticated request (internal and user keys, whatever the outcome, including `403` and `429`) writes one data point to the Analytics Engine dataset `scanlake_gateway_usage` (binding `USAGE`). Requests refused before the key is known (`401`, or `403` for an inactive key or wrong origin) are not counted. ScanLake Auth's admin panel reads the columns by position:
+
+| Column | Value |
+|---|---|
+| `index1` | key hash (SHA-256 hex) |
+| `blob1` | `user` or `internal` |
+| `blob2` | `ownerId` |
+| `blob3` | `discordId` (`''` for internal keys) |
+| `blob4` | `tier` (`''` for internal keys) |
+| `blob5` | HTTP method |
+| `blob6` | raw path, at most 256 characters |
+| `blob7` | status code, as a string |
+| `double1` | `1` |
+| `double2` | response bytes (`Content-Length`, or `0`) |
+
+Analytics Engine samples at high volume, so sum `_sample_interval * double1` rather than counting rows. Without a `USAGE` binding nothing is written.
+
+---
+
 ## Rate Limiting
 
-The gateway enforces two independent rate-limit checks:
+The gateway enforces three rate-limit checks, in this order. A request refused by one check is not counted by the later ones, so a throttled key burns no IP or global budget.
 
-### 1. Per-API-Key Limit
+### 1. Per Key or Account
 
-Each API key has its own configurable rate limit defined in its metadata:
-- `rateLimit` – Maximum requests allowed
-- `rateLimitWindowMs` – Time window in milliseconds
+- **Internal keys** (`gw-key:<hash>`): the key's `rateLimit` requests per `rateLimitWindowMs`.
+- **User keys** (`gw-acct:<discordId>`): every window in the entry's `limits`, shared by all keys of the account (see [User API Keys](#rate-limits)).
 
 **Example:** 1000 requests per hour
 ```json
@@ -331,6 +436,10 @@ Each API key has its own configurable rate limit defined in its metadata:
 ### 2. Per-IP Hard Ceiling
 
 All requests from the same IP address are limited to **5000 requests per hour**, regardless of API key limits. This protects the gateway from abuse.
+
+### 3. Global Budget
+
+**10,000,000 requests per 30-day window** across all traffic, a cost-control backstop. Exhaustion returns `503 Service temporarily unavailable` with `Retry-After`. `GET /api/admin/budget` (internal keys only, consumes no slot) reports its use: `used`, `limit`, `remaining`, `usedPercent`, `windowMs`, `windowLabel` (`"30-day window"`) and `resetsAt`.
 
 ### Rate Limit Responses
 
@@ -346,14 +455,15 @@ Content-Type: application/json
 }
 ```
 
-The `Retry-After` header indicates how many seconds to wait before retrying.
+The `Retry-After` header indicates how many seconds to wait before retrying. User-key responses also carry `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`.
 
 ### Implementation Details
 
-Rate limiting uses Cloudflare Durable Objects with SQLite storage for distributed, consistent state:
-- Keys are tracked per API key hash: `gw-key:<hash>`
-- IPs are tracked per client IP: `gw-ip:<ip>`
-- Counters reset after the window expires
+Rate limiting uses one Durable Object (`RateLimiter`) per counter name: `gw-acct:<discordId>`, `gw-key:<hash>`, `gw-ip:<ip>` and `gw-global`.
+- Windows are **fixed** and aligned to the Unix epoch (a 1-minute window resets on the minute, a day window at 00:00 UTC, the 30-day window every 30 days since 1970). Up to twice the limit can therefore pass around a window boundary.
+- Each window is one counter in DO storage (`w:<windowMs>:<windowIndex>`), so storage stays a few small keys however much traffic arrives. Counters of ended windows are deleted when the next window starts.
+- One check covers several windows: it counts the request in all of them only if every window has room.
+- The first check after this storage format was deployed deletes the old `timestamps` array, so counts restart from zero then.
 
 ---
 
@@ -372,6 +482,7 @@ The gateway supports Cross-Origin Resource Sharing (CORS), allowing browser-base
 
 **Allowed Headers:**
 - `X-API-Key`
+- `Authorization`
 - `Content-Type`
 - `Range`
 
@@ -380,6 +491,8 @@ The gateway supports Cross-Origin Resource Sharing (CORS), allowing browser-base
 - `Content-Disposition`
 - `ETag`
 - `Content-Range`
+- `Retry-After`
+- `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
 
 ### Per-Key Origin Restrictions
 
@@ -556,8 +669,13 @@ const result = await conn.query(`
 src/
 ├── index.ts                 # Main app, route definitions
 ├── types.ts                 # TypeScript interfaces
+├── lib/
+│   ├── publicDerived.ts    # Derived files user keys may read (sync with the Dashboard proxy)
+│   └── limits.ts           # IP / global limits, per-key and per-account windows
 ├── middleware/
-│   ├── apiKey.ts           # API key validation
+│   ├── apiKey.ts           # API key validation (sk_ and slk_)
+│   ├── usage.ts            # Analytics Engine data point per authenticated request
+│   ├── restrictUserKeys.ts # User keys: kill switch + public derived files only
 │   ├── cors.ts             # CORS headers
 │   ├── rateLimit.ts        # Rate limiting
 │   └── requireScope.ts     # Per-key scope check for write routes
@@ -570,21 +688,33 @@ src/
 ├── services/
 │   ├── r2.ts               # R2 bucket operations
 │   ├── keys.ts             # Object key validation (isSafeKey)
-│   ├── rate-limit.ts       # Rate limit logic
+│   ├── rate-limit.ts       # Calls the RateLimiter DO
 │   └── logger.ts           # Audit logging
 └── durable-objects/
-    ├── RateLimiter.ts      # Durable Object for rate limiting
+    ├── RateLimiter.ts      # Fixed-window counters, several windows per check
     └── LogBuffer.ts        # Durable Object for log buffering
 scripts/
 └── create-api-key.mjs      # Generates a key + prints the KV command
+test/                       # Vitest suites, run inside workerd (@cloudflare/vitest-plugin)
 ```
 
 ### Running Tests
 
 ```bash
+npm test            # vitest run: user keys, rate limiter, usage data points
+npm run typecheck   # tsc for src and test
+```
+
+The tests run inside the Workers runtime with in-memory KV, R2 and Durable Objects; nothing touches Cloudflare.
+
+To try requests by hand, start a dev server:
+
+```bash
 npm run dev
 # Make test requests to http://localhost:8787/api/files with X-API-Key header
 ```
+
+From the ScanLake folder, the `gateway` entry in `.claude/launch.json` runs it on port 8791 with its local state in `O:/Regolith/ScanLake/.wrangler/apikeys` (`--persist-to`). A dev server of another Worker that binds the same `API_KEYS` namespace and persists to the same folder sees the same local keys.
 
 `wrangler dev` reads the `preview_id` KV namespace locally, so register a local test key with `--local --preview` instead of `--remote --preview false`:
 
@@ -629,6 +759,8 @@ node scripts/create-api-key.mjs
 
 The new routes are additive: `/api/files` behaves as before (its list entries gain an `etag` field), and existing keys keep read-only access.
 
+The `scanlake_gateway_usage` Analytics Engine dataset needs no setup: it is created by the first data point written after the deploy that adds the `USAGE` binding. That deploy also switches the `RateLimiter` storage to fixed-window counters, so every rate-limit and budget count restarts from zero.
+
 The gateway will be deployed to a URL like:
 ```
 https://scanlake-gateway.your-account.workers.dev
@@ -669,9 +801,10 @@ All file access is logged to the `scanlake-logs` R2 bucket with the following ev
 ### Metrics
 
 The gateway tracks:
-- Requests per API key (rate limiting)
+- Requests per API key or Discord account (rate limiting)
 - Requests per IP address (hard ceiling)
 - File access events (audit trail)
+- One Analytics Engine data point per authenticated request (dataset `scanlake_gateway_usage`, see [Usage counting](#usage-counting))
 
 ---
 
@@ -700,9 +833,9 @@ The gateway tracks:
 ### API Key Rejected (401)
 
 **Possible Causes:**
-- API key header missing → Add `X-API-Key` header
-- Invalid format → Ensure format is `sk_[hex]{32,64}`
-- Key not in KV → Create the key in API_KEYS namespace
+- API key header missing → Add `X-API-Key` (or `Authorization: Bearer`) header
+- Invalid format → Ensure format is `sk_[hex]{32,64}` or `slk_[0-9a-f]{64}`
+- Key not in KV → Create the key in API_KEYS namespace (user keys: revoked keys are deleted, so they get 401)
 - Key hash mismatch → Verify correct plaintext key
 
 **Solution:**

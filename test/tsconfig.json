@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"],
+    // The plugin's types use Symbol.dispose, which lib ES2022 lacks
+    "skipLibCheck": true
+  },
+  "include": ["./**/*.ts", "../src"]
+}

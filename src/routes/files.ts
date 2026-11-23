@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import type { Env, AppVariables } from '../types'
-import { listFiles, getFile } from '../services/r2'
+import { listFiles, listFilteredFiles, getFile } from '../services/r2'
+import type { ListingFilter } from '../services/r2'
 import { logEvent } from '../services/logger'
 import { isSafeKey } from '../services/keys'
 
@@ -12,6 +13,16 @@ type FilesEnv = {
 /** Picks the R2 bucket a route operates on (e.g. env => env.SCANLAKE_BUCKET). */
 export type BucketSelector = (env: Env) => R2Bucket
 
+export interface ListRouteOptions {
+  /**
+   * Applied when the request carries a user key (kind "user"): the listing
+   * holds only the keys the filter allows and never has a cursor (see
+   * listFilteredFiles).  Routes without a filter must be closed to user keys
+   * (restrictUserKeys), or user keys see the whole bucket.
+   */
+  userKeyFilter?: ListingFilter
+}
+
 /**
  * GET /api/files, GET /api/derived
  *
@@ -19,19 +30,22 @@ export type BucketSelector = (env: Env) => R2Bucket
  * Query params:
  *   prefix  – optional key prefix filter
  *   limit   – number of results (1–1000, default 100)
- *   cursor  – pagination cursor from a previous response
+ *   cursor  – pagination cursor from a previous response (unused by filtered listings)
  */
-export function makeListRoute(selectBucket: BucketSelector) {
+export function makeListRoute(selectBucket: BucketSelector, options: ListRouteOptions = {}) {
   return async function listRoute(c: Context<FilesEnv>): Promise<Response> {
     const prefix = c.req.query('prefix') || undefined
     const cursor = c.req.query('cursor') || undefined
     const limitRaw = c.req.query('limit')
     const limit = limitRaw ? Math.min(Math.max(1, parseInt(limitRaw, 10)), 1000) : 100
 
-    const result = await listFiles(selectBucket(c.env), prefix, limit, cursor)
-
     const meta = c.get('apiKeyMeta')
     const hash = c.get('apiKeyHash')
+
+    const filter = meta.kind === 'user' ? options.userKeyFilter : undefined
+    const result = filter
+      ? await listFilteredFiles(selectBucket(c.env), filter, prefix, limit)
+      : await listFiles(selectBucket(c.env), prefix, limit, cursor)
 
     c.executionCtx.waitUntil(
       logEvent(c.env, {
